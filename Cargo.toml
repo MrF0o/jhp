@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/parser",
+    "crates/executor",
+    "crates/engine",
+    "crates/jhp",
+    "ext/get_quote",
+    "ext/sqlx",
+]

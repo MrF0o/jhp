@@ -1,0 +1,17 @@
+[package]
+name = "jhp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jhp_engine = { path = "../engine" }
+# Pull in tokio only for the binary main
+# axum is only used in the engine crate
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros"] }
+
+[features]
+# no special features yet
+
+[[bin]]
+name = "jhp"
+path = "src/main.rs"

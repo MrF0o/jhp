@@ -1,0 +1,12 @@
+[package]
+name = "jhp_executor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "sync"] }
+v8 = "139.0.0"
+jhp_parser = { path = "../parser" }

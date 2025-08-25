@@ -1,0 +1,11 @@
+[package]
+name = "jhp_ext_get_quote"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "jhp_ext_get_quote"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
