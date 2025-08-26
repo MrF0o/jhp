@@ -99,13 +99,28 @@ impl Executor {
                             guard.clear();
                         }
                         Self::install_html_fn(&mut context_scope, self.buffer.clone())?;
-                        // execute blocks with accurate origins
-                        let _ = crate::v8utils::run_jhp_blocks_with_origin(
+                        // each page is rendered independently in a big js script
+                        let js_program = jhp_parser::blocks_to_js(blocks);
+                        match crate::v8utils::compile_script(
                             &mut context_scope,
-                            blocks,
+                            &js_program,
                             &resource_name,
-                            self.buffer.clone(),
-                        );
+                        ) {
+                            Ok(script) => {
+                                if script.run(&mut context_scope).is_none() {
+                                    if let Ok(mut guard) = self.buffer.lock() {
+                                        guard.push_str(
+                                            "\n<!-- ERROR -->\nScript execution failed\n",
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if let Ok(mut guard) = self.buffer.lock() {
+                                    guard.push_str(&format!("\n<!-- ERROR -->\n{}\n", e));
+                                }
+                            }
+                        }
 
                         let guard = self
                             .buffer
