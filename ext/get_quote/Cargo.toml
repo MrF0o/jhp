@@ -8,4 +8,5 @@ name = "jhp_ext_get_quote"
 crate-type = ["cdylib"]
 
 [dependencies]
-libc = { workspace = true }
+jhp_extensions = { path = "../../crates/extensions" }
+serde_json = { workspace = true }

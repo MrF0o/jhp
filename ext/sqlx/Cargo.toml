@@ -14,3 +14,4 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 once_cell = { workspace = true }
+jhp_extensions = { path = "../../crates/extensions" }

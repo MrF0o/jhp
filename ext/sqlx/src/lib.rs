@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use libc::c_uchar;
+use jhp_extensions::{JhpBuf, JhpCallResult, JhpFunctionDescV1, JhpRegisterV1, free_v1};
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::Value;
@@ -10,34 +10,6 @@ use sqlx::{Column, Pool, Row};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-#[repr(C)]
-pub struct JhpBuf {
-    pub ptr: *const c_uchar,
-    pub len: usize,
-}
-#[repr(C)]
-pub struct JhpCallResult {
-    pub ok: bool,
-    pub data: JhpBuf,
-    pub code: i32,
-}
-
-pub type ExtCallV1 = extern "C" fn(JhpBuf) -> JhpCallResult;
-pub type ExtFreeV1 = extern "C" fn(*const c_uchar, usize);
-
-#[repr(C)]
-pub struct JhpFunctionDescV1 {
-    pub name: *const libc::c_char,
-    pub call: ExtCallV1,
-}
-#[repr(C)]
-pub struct JhpRegisterV1 {
-    pub abi_version: u32,
-    pub funcs: *const JhpFunctionDescV1,
-    pub len: usize,
-    pub free_fn: ExtFreeV1,
-}
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -74,22 +46,11 @@ static POOLS: Lazy<Mutex<HashMap<String, DbPool>>> = Lazy::new(|| Mutex::new(Has
 fn ok_json(res: Res) -> JhpCallResult {
     let s = serde_json::to_vec(&res).unwrap_or_default();
     let len = s.len();
-    let ptr = Box::into_raw(s.into_boxed_slice()) as *const c_uchar;
+    let ptr = Box::into_raw(s.into_boxed_slice()) as *const u8;
     JhpCallResult {
         ok: true,
         data: JhpBuf { ptr, len },
         code: 0,
-    }
-}
-
-extern "C" fn free_v1(ptr: *const c_uchar, len: usize) {
-    if !ptr.is_null() && len > 0 {
-        unsafe {
-            drop(Box::from_raw(std::slice::from_raw_parts_mut(
-                ptr as *mut u8,
-                len,
-            )))
-        }
     }
 }
 

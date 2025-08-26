@@ -916,19 +916,30 @@ dependencies = [
 name = "jhp_ext_get_quote"
 version = "0.1.0"
 dependencies = [
- "libc",
+ "jhp_extensions",
+ "serde_json",
 ]
 
 [[package]]
 name = "jhp_ext_sqlx"
 version = "0.1.0"
 dependencies = [
+ "jhp_extensions",
  "libc",
  "once_cell",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "jhp_extensions"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

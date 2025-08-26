@@ -4,6 +4,7 @@ members = [
     "crates/parser",
     "crates/executor",
     "crates/engine",
+    "crates/extensions",
     "crates/jhp",
     "ext/get_quote",
     "ext/sqlx",

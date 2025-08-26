@@ -5,20 +5,7 @@ use std::fs;
 use std::os::raw::{c_char, c_uchar};
 use std::path::{Path, PathBuf};
 
-/// Legacy C-ABI: functions with no args returning C-style const char*.
-#[repr(C)]
-pub struct JhpCFunctionLegacy {
-    pub name: *const c_char,
-    pub func: extern "C" fn() -> *const c_char,
-}
-
-#[repr(C)]
-pub struct JhpRegisterLegacy {
-    pub funcs: *const JhpCFunctionLegacy,
-    pub len: usize,
-}
-
-pub type ExtRegisterLegacyFn = unsafe extern "C" fn() -> JhpRegisterLegacy;
+// NOTE: legacy C-ABI removed.
 
 /// v1 ABI: JSON-in/JSON-out
 #[repr(C)]
@@ -53,40 +40,7 @@ pub struct JhpRegisterV1 {
 
 pub type ExtRegisterV1Fn = unsafe extern "C" fn() -> JhpRegisterV1;
 
-type CFuncLegacy = extern "C" fn() -> *const c_char;
-
-fn make_v8_func_from_c_legacy<'s>(
-    scope: &mut v8::ContextScope<'s, v8::HandleScope>,
-    func_ptr: CFuncLegacy,
-) -> v8::Local<'s, v8::Function> {
-    // Store the function pointer value directly in an External (no heap allocation/leak).
-    let raw_fn: *const () = func_ptr as *const ();
-    let ext = v8::External::new(scope, raw_fn as *mut std::ffi::c_void);
-
-    let cb = |scope: &mut v8::HandleScope,
-              args: v8::FunctionCallbackArguments,
-              mut rv: v8::ReturnValue| {
-        if let Ok(ext) = v8::Local::<v8::External>::try_from(args.data()) {
-            let raw = ext.value() as *const ();
-            if !raw.is_null() {
-                let func: CFuncLegacy = unsafe { std::mem::transmute(raw) };
-                let s_ptr = (func)();
-                if !s_ptr.is_null() {
-                    // SAFETY: extension promises valid NUL-terminated UTF-8
-                    let s = unsafe { CStr::from_ptr(s_ptr) }.to_string_lossy();
-                    if let Some(v) = v8::String::new(scope, &s) {
-                        rv.set(v.into());
-                    }
-                }
-            }
-        }
-    };
-
-    v8::Function::builder(cb)
-        .data(ext.into())
-        .build(scope)
-        .expect("build ext function")
-}
+// NOTE: legacy C-ABI support removed.
 
 fn make_v8_func_from_c_v1<'s>(
     scope: &mut v8::ContextScope<'s, v8::HandleScope>,
@@ -205,7 +159,7 @@ pub fn load_installers(ext_dir: &Path) -> Vec<BindingInstaller> {
                 Ok(lib) => {
                     // Safety: leak the lib to keep it alive for the process lifetime
                     let lib = Box::leak(Box::new(lib));
-                    // prefer v1 ABI if available
+                    // v1 ABI
                     if let Ok(sym_v1) = lib.get::<ExtRegisterV1Fn>(b"jhp_register_v1") {
                         let reg = sym_v1();
                         if reg.abi_version == 1 && !reg.funcs.is_null() && reg.len > 0 {
@@ -224,29 +178,6 @@ pub fn load_installers(ext_dir: &Path) -> Vec<BindingInstaller> {
                                     std::sync::Arc::new(move |scope| {
                                         let name_v8 = v8::String::new(scope, &name).unwrap();
                                         let func = make_v8_func_from_c_v1(scope, call, free_fn);
-                                        let global = scope.get_current_context().global(scope);
-                                        let _ = global.set(scope, name_v8.into(), func.into());
-                                    });
-                                installers.push(installer);
-                            }
-                        }
-                    } else if let Ok(sym_legacy) = lib.get::<ExtRegisterLegacyFn>(b"jhp_register") {
-                        let reg_res = sym_legacy();
-                        if reg_res.len > 0 && !reg_res.funcs.is_null() {
-                            let slice = std::slice::from_raw_parts(reg_res.funcs, reg_res.len);
-                            for cfn in slice.iter() {
-                                if cfn.name.is_null() || (cfn.func as usize) == 0 {
-                                    continue;
-                                }
-                                let name = match CStr::from_ptr(cfn.name).to_str() {
-                                    Ok(s) => s.to_owned(),
-                                    Err(_) => continue,
-                                };
-                                let func_ptr = cfn.func;
-                                let installer: BindingInstaller =
-                                    std::sync::Arc::new(move |scope| {
-                                        let name_v8 = v8::String::new(scope, &name).unwrap();
-                                        let func = make_v8_func_from_c_legacy(scope, func_ptr);
                                         let global = scope.get_current_context().global(scope);
                                         let _ = global.set(scope, name_v8.into(), func.into());
                                     });
