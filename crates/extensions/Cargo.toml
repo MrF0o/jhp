@@ -1,0 +1,15 @@
+[package]
+name = "jhp_extensions"
+version = "0.1.0"
+edition = "2024"
+description = "Helper macros and types to build safe native extensions for JHP (v1 JSON ABI)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "jhp_extensions"
+crate-type = ["rlib"]
+
+[dependencies]
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
