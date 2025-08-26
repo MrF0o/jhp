@@ -38,8 +38,6 @@ once_cell = "1"
 # SQLX used by the sqlx extension; keep features centralized
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio-rustls",
-    "postgres",
-    "mysql",
     "sqlite",
     "macros",
     "json",
