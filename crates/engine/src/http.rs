@@ -1,3 +1,4 @@
+use crate::config::HttpServerConfig;
 use axum::{Router, response::Html, routing::get};
 use jhp_executor::Op;
 use jhp_parser as parser;
@@ -8,22 +9,28 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub struct HttpServer {
     router: Arc<Router>,
+    config: HttpServerConfig,
 }
 
 impl HttpServer {
     /// Construct an HttpServer with routes defined here.
-    /// Currently exposes:
+    /// By default exposes:
     /// - GET "/": renders `jhp-tests/index.jhp` via the executor.
-    pub fn new(sender: mpsc::Sender<Op>) -> Self {
+    pub fn new(sender: mpsc::Sender<Op>, config: HttpServerConfig) -> Self {
+        let index_path = config.index_path();
+        let index_name = config.index_file.clone();
         let router = Router::new().route(
             "/",
             get({
                 let sender = sender.clone();
+                let index_path = index_path.clone();
+                let index_name = index_name.clone();
                 move || {
                     let sender = sender.clone();
+                    let index_path = index_path.clone();
+                    let index_name = index_name.clone();
                     async move {
-                        let filepath = String::from("jhp-tests/index.jhp");
-                        let content = match fs::read_to_string(&filepath) {
+                        let content = match fs::read_to_string(&index_path) {
                             Ok(content) => content,
                             Err(_) => return Html("Template file not found".to_string()),
                         };
@@ -36,7 +43,7 @@ impl HttpServer {
                         let _ = sender
                             .send(Op::Render {
                                 blocks,
-                                resource_name: "index.jhp".to_string(),
+                                resource_name: index_name.clone(),
                                 respond_to: tx,
                             })
                             .await;
@@ -52,11 +59,12 @@ impl HttpServer {
 
         Self {
             router: Arc::new(router),
+            config,
         }
     }
 
     pub async fn start(&self) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        let listener = tokio::net::TcpListener::bind(&self.config.addr())
             .await
             .unwrap();
 

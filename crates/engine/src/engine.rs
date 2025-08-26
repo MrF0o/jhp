@@ -1,3 +1,4 @@
+use crate::config::EngineConfig;
 use crate::http::HttpServer;
 use crate::{bindings, extensions};
 use jhp_executor::{BindingInstaller, Executor, Op};
@@ -19,15 +20,15 @@ pub struct ExecutorPool {
 }
 
 impl ExecutorPool {
-    pub fn new(nb: usize) -> Self {
+    pub fn new(nb: usize, config: &EngineConfig) -> Self {
         let mut threads = Vec::with_capacity(nb);
         let mut senders = Vec::with_capacity(nb);
 
         // Prepare installers: built-ins + native extensions (.so) + JS extensions (.js)
-        let mut all_installers: Vec<BindingInstaller> = bindings::default_installers();
-        let ext_dir = std::path::Path::new("ext");
-        let native_installers = extensions::load_installers(ext_dir);
-        let js_installers = extensions::load_js_installers(ext_dir);
+        let mut all_installers: Vec<BindingInstaller> =
+            bindings::default_installers(&config.document_root);
+        let native_installers = extensions::load_installers(&config.extensions_dir);
+        let js_installers = extensions::load_js_installers(&config.extensions_dir);
         all_installers.extend(native_installers);
         all_installers.extend(js_installers);
         let installers: Arc<Vec<BindingInstaller>> = Arc::new(all_installers);
@@ -93,18 +94,24 @@ pub struct Engine {
     pub executor_pool: std::sync::Arc<ExecutorPool>,
     sender: mpsc::Sender<Op>,
     receiver: Option<mpsc::Receiver<Op>>,
+    pub config: EngineConfig,
 }
 
 impl Engine {
     pub fn new(nb_executors: usize) -> Self {
+        Self::new_with_config(nb_executors, EngineConfig::default())
+    }
+
+    pub fn new_with_config(nb_executors: usize, config: EngineConfig) -> Self {
         assert!(nb_executors > 0);
-        let pool = std::sync::Arc::new(ExecutorPool::new(nb_executors));
+        let pool = std::sync::Arc::new(ExecutorPool::new(nb_executors, &config));
         let (sender, receiver) = mpsc::channel::<Op>(128);
 
         Self {
             executor_pool: pool,
             sender,
             receiver: Some(receiver),
+            config,
         }
     }
 
@@ -118,7 +125,7 @@ impl Engine {
         }
 
         let task = tokio::spawn({
-            let server = HttpServer::new(self.sender.clone());
+            let server = HttpServer::new(self.sender.clone(), self.config.http());
             async move { server.start().await }
         });
         task.await.unwrap();

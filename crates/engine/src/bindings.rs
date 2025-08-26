@@ -4,8 +4,9 @@
 
 use jhp_executor::{BindingInstaller, v8utils};
 use jhp_parser as parser;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::{fs, path::Path};
 
 pub trait InstallBindings {
     fn install(&self, scope: &mut v8::ContextScope<v8::HandleScope>);
@@ -26,11 +27,28 @@ impl InstallBindings for GlobalBinding {
 /// Installs an `include(path)` function to inline-execute files.
 /// - If `path` ends with `.jhp`, the file is parsed with the JHP parser and transformed to JS.
 /// - If `path` ends with `.js`, the file contents are executed directly.
-pub struct IncludeBinding;
+pub struct IncludeBinding {
+    /// Fallback directory to resolve includes relative to when a provided path
+    /// isn't directly readable.
+    pub document_root: PathBuf,
+}
+
+impl IncludeBinding {
+    pub fn new<P: Into<PathBuf>>(document_root: P) -> Self {
+        Self {
+            document_root: document_root.into(),
+        }
+    }
+}
 
 impl InstallBindings for IncludeBinding {
     fn install(&self, scope: &mut v8::ContextScope<v8::HandleScope>) {
         let global = scope.get_current_context().global(scope);
+
+        // Pass document_root via External to avoid capturing non-Copy in the callback
+        let tr_ptr: *mut std::ffi::c_void =
+            Box::into_raw(Box::new(self.document_root.clone())) as *mut std::ffi::c_void;
+        let external = v8::External::new(scope, tr_ptr);
 
         let include_fn = v8::Function::builder(
             move |scope: &mut v8::HandleScope,
@@ -49,10 +67,15 @@ impl InstallBindings for IncludeBinding {
 
                 // load file
                 let path_ref = Path::new(&path);
-                let content = match fs::read_to_string(path_ref).or_else(|_| {
-                    let fallback = Path::new("jhp-tests").join(&path);
-                    fs::read_to_string(&fallback)
-                }) {
+                // retrieve document_root from function data
+                let tr_buf = v8::Local::<v8::External>::try_from(args.data())
+                    .map(|e| e.value() as *const PathBuf)
+                    .unwrap();
+                let document_root: &PathBuf = unsafe { &*tr_buf };
+
+                let content = match fs::read_to_string(path_ref)
+                    .or_else(|_| fs::read_to_string(document_root.join(&path)))
+                {
                     Ok(s) => s,
                     Err(e) => {
                         let msg = v8::String::new(
@@ -89,6 +112,7 @@ impl InstallBindings for IncludeBinding {
                 rv.set(v8::undefined(scope).into());
             },
         )
+        .data(external.into())
         .build(scope)
         .expect("Failed to create include function");
 
@@ -98,14 +122,18 @@ impl InstallBindings for IncludeBinding {
     }
 }
 
-/// returns the default set of binding installers used by the engine
-pub fn default_installers() -> Vec<BindingInstaller> {
+/// Build the default set of binding installers used by the engine, configured with a document root.
+pub fn default_installers<P: AsRef<Path>>(document_root: P) -> Vec<BindingInstaller> {
+    let document_root = document_root.as_ref().to_path_buf();
     vec![
         Arc::new(|scope: &mut v8::ContextScope<v8::HandleScope>| {
             GlobalBinding.install(scope);
         }),
-        Arc::new(|scope: &mut v8::ContextScope<v8::HandleScope>| {
-            IncludeBinding.install(scope);
-        }),
+        {
+            let tr = document_root.clone();
+            Arc::new(move |scope: &mut v8::ContextScope<v8::HandleScope>| {
+                IncludeBinding::new(tr.clone()).install(scope);
+            })
+        },
     ]
 }
