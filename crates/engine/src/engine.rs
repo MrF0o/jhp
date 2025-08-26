@@ -1,10 +1,8 @@
 use crate::http::HttpServer;
 use crate::{bindings, extensions};
-use axum::{Router, response::Html, routing::get};
 use jhp_executor::{BindingInstaller, Executor, Op};
-use jhp_parser as parser;
 use std::sync::Arc;
-use std::{fs, thread::JoinHandle};
+use std::thread::JoinHandle;
 use std::{
     sync::{
         Mutex,
@@ -119,41 +117,8 @@ impl Engine {
             });
         }
 
-        let sender = self.sender.clone();
-        let router = Router::new().route(
-            "/",
-            get(move || {
-                let sender = sender.clone();
-                async move {
-                    // Read and parse template fresh on each request
-                    let filepath = String::from("jhp-tests/index.jhp");
-                    let content = match fs::read_to_string(filepath) {
-                        Ok(content) => content,
-                        Err(_) => return Html("Template file not found".to_string()),
-                    };
-
-                    let mut parser = parser::Parser::new(&content);
-                    let parser_results = parser.parse();
-                    let blocks = parser_results.blocks;
-
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let _ = sender
-                        .send(Op::Render {
-                            blocks,
-                            resource_name: "index.jhp".to_string(),
-                            respond_to: tx,
-                        })
-                        .await;
-                    match rx.await {
-                        Ok(body) => Html(body),
-                        Err(_) => Html("Executor unavailable".to_string()),
-                    }
-                }
-            }),
-        );
-
         let task = tokio::spawn({
-            let server = HttpServer::new(router);
+            let server = HttpServer::new(self.sender.clone());
             async move { server.start().await }
         });
         task.await.unwrap();
