@@ -199,8 +199,13 @@ extern "C" fn sqlx_connect(buf: JhpBuf) -> JhpCallResult {
     }
     let id = format!("pool_{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
     let res = if url.starts_with("postgres://") || url.starts_with("postgresql://") {
-        RT.block_on(async { PgPoolOptions::new().max_connections(1).connect(url.as_str()).await })
-            .map(DbPool::Postgres)
+        RT.block_on(async {
+            PgPoolOptions::new()
+                .max_connections(1)
+                .connect(url.as_str())
+                .await
+        })
+        .map(DbPool::Postgres)
     } else if url.starts_with("mysql://") {
         RT.block_on(async {
             MySqlPoolOptions::new()

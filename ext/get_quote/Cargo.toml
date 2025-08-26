@@ -8,4 +8,4 @@ name = "jhp_ext_get_quote"
 crate-type = ["cdylib"]
 
 [dependencies]
-libc = "0.2"
+libc = { workspace = true }

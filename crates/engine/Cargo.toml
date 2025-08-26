@@ -7,9 +7,9 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-axum = "0.8.4"
-tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros"] }
-v8 = "139.0.0"
+axum = { workspace = true }
+tokio = { workspace = true }
+v8 = { workspace = true }
 jhp_executor = { path = "../executor" }
 jhp_parser = { path = "../parser" }
-libloading = { version = "0.8", default-features = false }
+libloading = { workspace = true }

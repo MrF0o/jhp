@@ -8,3 +8,40 @@ members = [
     "ext/get_quote",
     "ext/sqlx",
 ]
+
+[workspace.dependencies]
+# Async runtime used across crates; disable default features and enable a superset of needed features
+tokio = { version = "1.47.1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+] }
+
+# V8 engine binding used by executor and engine
+v8 = "139.0.0"
+
+# Web framework used by engine
+axum = "0.8.4"
+
+# Dynamic library loader used by engine
+libloading = { version = "0.8", default-features = false }
+
+# C types used by native extensions
+libc = "0.2"
+
+# Common serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+once_cell = "1"
+
+# SQLX used by the sqlx extension; keep features centralized
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "mysql",
+    "sqlite",
+    "macros",
+    "json",
+    "uuid",
+    "chrono",
+] }
