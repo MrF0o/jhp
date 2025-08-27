@@ -124,11 +124,11 @@ fn blocks_to_js_emits_expected_code() {
 
     let js = blocks_to_js(res.blocks);
 
-    // html("Hello "), Expression -> html(String(name)); html("!\n"), js("log(name);")
+    // echo("Hello "), Expression -> echo(String(name)); echo("!\n"), js("log(name);")
     let expected_lines = vec![
-        "html(`Hello `);",
-        "html(String(name));",
-        "html(`!",
+        "echo(`Hello `);",
+        "echo(String(name));",
+        "echo(`!",
         "`);",
         "log(name);",
     ];

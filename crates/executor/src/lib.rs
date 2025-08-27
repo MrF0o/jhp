@@ -62,8 +62,8 @@ impl Executor {
                         install(&mut context_scope);
                     }
 
-                    if let Err(e) = Self::install_html_fn(&mut context_scope, self.buffer.clone()) {
-                        eprintln!("install_html_fn error: {}", e);
+                    if let Err(e) = Self::install_echo_fn(&mut context_scope, self.buffer.clone()) {
+                        eprintln!("install_echo_fn error: {}", e);
                         continue;
                     }
 
@@ -98,7 +98,7 @@ impl Executor {
                                 .map_err(|_| "buffer poisoned".to_string())?;
                             guard.clear();
                         }
-                        Self::install_html_fn(&mut context_scope, self.buffer.clone())?;
+                        Self::install_echo_fn(&mut context_scope, self.buffer.clone())?;
                         // each page is rendered independently in a big js script
                         let js_program = jhp_parser::blocks_to_js(blocks);
                         match crate::v8utils::compile_script(
@@ -153,7 +153,7 @@ impl Executor {
             .ok_or_else(|| "Failed to run the js code block sources".to_string())
     }
 
-    fn install_html_fn(
+    fn install_echo_fn(
         scope: &mut v8::ContextScope<v8::HandleScope>,
         output_buffer: Arc<Mutex<String>>,
     ) -> Result<(), String> {
@@ -163,7 +163,7 @@ impl Executor {
 
         let global = scope.get_current_context().global(scope);
 
-        let html_fn = v8::Function::builder(
+        let echo_fn = v8::Function::builder(
             move |scope: &mut v8::HandleScope,
                   args: v8::FunctionCallbackArguments,
                   _rv: v8::ReturnValue| {
@@ -183,10 +183,10 @@ impl Executor {
         )
         .data(v8::External::new(scope, external_ptr).into()) // attach External
         .build(scope)
-        .ok_or_else(|| "Failed to create html function".to_string())?;
+        .ok_or_else(|| "Failed to create echo function".to_string())?;
 
-        let html_fn_key = v8::String::new(scope, "html").unwrap();
-        global.set(scope, html_fn_key.into(), html_fn.into());
+        let echo_fn_key = v8::String::new(scope, "echo").unwrap();
+        global.set(scope, echo_fn_key.into(), echo_fn.into());
 
         Ok(())
     }

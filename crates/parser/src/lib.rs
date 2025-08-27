@@ -72,7 +72,13 @@ impl<'a> Parser<'a> {
             if c == '\n' {
                 self.line += 1;
             }
-            buf.push(c);
+            // HTML-encode JS-breaking characters so they don't break echo(`...`) literals
+            match c {
+                '\'' => buf.push_str("&#39;"), // single quote
+                '"' => buf.push_str("&quot;"), // double quote
+                '`' => buf.push_str("&#96;"),  // backtick
+                _ => buf.push(c),
+            }
         }
 
         CodeBlock::Html(CodeBlockContent {
@@ -163,10 +169,10 @@ where
                 js_lines.push(block.content.trim().into());
             }
             CodeBlock::Html(block) => {
-                js_lines.push(format!("html(`{}`);", block.content));
+                js_lines.push(format!("echo(`{}`);", block.content));
             }
             CodeBlock::Expression(block) => {
-                js_lines.push(format!("html(String({}));", block.content.trim()));
+                js_lines.push(format!("echo(String({}));", block.content.trim()));
             }
         }
     }

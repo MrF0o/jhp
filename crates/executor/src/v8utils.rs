@@ -76,16 +76,16 @@ pub fn run_jhp_blocks_with_origin<'h>(
     for block in blocks {
         match *block {
             CodeBlock::Html(CodeBlockContent { content, .. }) => {
-                let src = format!("html(`{}`);", content);
+                let src = format!("echo(`{}`);", content);
                 if let Err(e) = compile_and_run_current_with_origin(hs, &src, resource_name, 0, 0) {
                     push_error(&output_buffer, &e);
                     return Err(e);
                 }
             }
             CodeBlock::Expression(CodeBlockContent { content, .. }) => {
-                let src = format!("html(String({}));", content.trim());
+                let src = format!("echo(String({}));", content.trim());
                 // Column offset equals prefix length before the expression
-                let col_off = 12; // len("html(String(") = 12
+                let col_off = 12; // len("echo(String(") = 12
                 if let Err(e) =
                     compile_and_run_current_with_origin(hs, &src, resource_name, 0, col_off)
                 {
