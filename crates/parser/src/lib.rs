@@ -1,6 +1,7 @@
 #[derive(Debug)]
 pub struct CodeBlockContent {
     pub lineno: usize,
+    pub colno: usize,
     pub content: String,
     pub level: usize,
 }
@@ -65,6 +66,7 @@ impl<'a> Parser<'a> {
 
     fn parse_html_block(&mut self) -> CodeBlock {
         let start_line = self.line;
+        let start_col = self.column_at(self.pos);
         let mut buf = String::new();
 
         while self.pos < self.content.len() && !self.lookahead("<?") {
@@ -83,6 +85,7 @@ impl<'a> Parser<'a> {
 
         CodeBlock::Html(CodeBlockContent {
             lineno: start_line,
+            colno: start_col,
             content: buf,
             level: self.nesting,
         })
@@ -91,8 +94,12 @@ impl<'a> Parser<'a> {
     fn parse_js_block(&mut self) -> CodeBlock {
         let start_line = self.line;
         // opening "<?"
+        let tag_pos = self.pos; // position of '<'
         let _ = self.consume(); // <
         let _ = self.consume(); // ?
+
+        // 1-based column index.
+        let mut start_col = self.column_at(tag_pos) + 2;
 
         let mut buf = String::new();
         while self.pos < self.content.len() && !self.lookahead("?>") {
@@ -122,15 +129,28 @@ impl<'a> Parser<'a> {
 
         // expression block if it starts with '=' after leading whitespace
         if trimmed_start.starts_with('=') {
+            // find '=' in the original buffer to compute accurate expression column start.
+            let eq_byte_idx = buf.find('=');
             let after_eq = trimmed_start[1..].trim();
+            if let Some(eq_idx) = eq_byte_idx {
+                // count chars from start of buf to '=' and whitespace after '=' to the first expr char
+                let chars_to_eq = buf[..eq_idx].chars().count();
+                let ws_after_eq = buf[eq_idx + '='.len_utf8()..]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .count();
+                start_col += chars_to_eq + 1 /* '=' */ + ws_after_eq;
+            }
             CodeBlock::Expression(CodeBlockContent {
                 lineno: start_line,
+                colno: start_col,
                 content: after_eq.to_string(),
                 level,
             })
         } else {
             CodeBlock::Javascript(CodeBlockContent {
                 lineno: start_line,
+                colno: start_col,
                 content: buf,
                 level,
             })
@@ -153,6 +173,18 @@ impl<'a> Parser<'a> {
         // advance by the byte length of this char
         self.pos += ch.len_utf8();
         ch
+    }
+}
+
+impl<'a> Parser<'a> {
+    /// Compute the 1-based column number at the given byte position in `self.content`.
+    /// Counts Unicode scalar values to avoid byte/char mismatches.
+    fn column_at(&self, byte_pos: usize) -> usize {
+        let prefix = &self.content[..byte_pos];
+        match prefix.rfind('\n') {
+            Some(nl_idx) => self.content[nl_idx + 1..byte_pos].chars().count() + 1,
+            None => prefix.chars().count() + 1,
+        }
     }
 }
 

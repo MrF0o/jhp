@@ -75,34 +75,61 @@ pub fn run_jhp_blocks_with_origin<'h>(
 ) -> Result<(), String> {
     for block in blocks {
         match *block {
-            CodeBlock::Html(CodeBlockContent { content, .. }) => {
+            CodeBlock::Html(CodeBlockContent {
+                content, lineno, ..
+            }) => {
                 let src = format!("echo(`{}`);", content);
-                if let Err(e) = compile_and_run_current_with_origin(hs, &src, resource_name, 0, 0) {
+                // HTML blocks map to generated echo at the block's start; column 0 is fine.
+                if let Err(e) = compile_and_run_current_with_origin(
+                    hs,
+                    &src,
+                    resource_name,
+                    lineno as i32 - 1,
+                    0,
+                ) {
                     push_error(&output_buffer, &e);
                     return Err(e);
                 }
             }
-            CodeBlock::Expression(CodeBlockContent { content, .. }) => {
+            CodeBlock::Expression(CodeBlockContent {
+                content,
+                lineno,
+                colno,
+                ..
+            }) => {
                 let src = format!("echo(String({}));", content.trim());
-                // Column offset equals prefix length before the expression
-                let col_off = 12; // len("echo(String(") = 12
-                if let Err(e) =
-                    compile_and_run_current_with_origin(hs, &src, resource_name, 0, col_off)
-                {
+                // Column offset is the original column where the first expr char appears,
+                // but the generated source adds "echo(String(" before it. V8's reported column
+                // is relative to generated code; by providing the original column as the origin's
+                // start column, V8 (start_column + generated_column) will align. To make the final
+                // column equal to the original JHP column, we subtract the generated prefix length
+                // from the origin's column offset so that when V8 adds the generated position we end up at colno.
+                let generated_prefix = 12; // len("echo(String(")
+                let col_off = (colno as i32 - 1).saturating_sub(generated_prefix as i32);
+                if let Err(e) = compile_and_run_current_with_origin(
+                    hs,
+                    &src,
+                    resource_name,
+                    lineno as i32 - 1,
+                    col_off,
+                ) {
                     push_error(&output_buffer, &e);
                     return Err(e);
                 }
             }
             CodeBlock::Javascript(CodeBlockContent {
-                content, lineno, ..
+                content,
+                lineno,
+                colno,
+                ..
             }) => {
                 // Adjust origin starting line to the block's starting line (1-based)
                 if let Err(e) = compile_and_run_current_with_origin(
                     hs,
-                    content.trim(),
+                    &content,
                     resource_name,
                     lineno as i32 - 1,
-                    0,
+                    colno as i32 - 1,
                 ) {
                     push_error(&output_buffer, &e);
                     return Err(e);
