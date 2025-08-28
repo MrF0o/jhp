@@ -63,6 +63,9 @@ async fn main() {
         config = config.set_document_root(docroot);
     }
 
-    let mut engine = Engine::new_with_config(4, config);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let mut engine = Engine::new_with_config(threads, config);
     engine.run().await.unwrap();
 }

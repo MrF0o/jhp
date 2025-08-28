@@ -35,7 +35,9 @@ impl ExecutorPool {
 
         for id in 0..nb {
             // each executor gets its own channel
-            let (tx, rx) = mpsc::channel::<Op>(nb);
+            // Use a deeper mailbox to absorb bursts from the HTTP server under load.
+            // This reduces contention and awaits in the forwarder at high concurrency.
+            let (tx, rx) = mpsc::channel::<Op>(1024);
             senders.push(tx);
 
             let installers_cloned = installers.clone();

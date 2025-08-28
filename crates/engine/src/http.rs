@@ -63,35 +63,29 @@ impl HttpServer {
         doc_root: DocumentRoot,
         path: String,
     ) -> Response {
-        // Root path: empty or only slashes -> render index if present, else 404
+        // Root path: empty or only slashes -> render index or 404
         if path.trim_matches('/').is_empty() {
-            if !doc_root.root_file_exists(doc_root.index_name()).await {
-                return (StatusCode::NOT_FOUND, "Cannot get '/': File Not Found").into_response();
-            }
-
-            let content = match doc_root.read_index().await {
-                Ok(content) => content,
+            match doc_root.read_index().await {
+                Ok(content) => {
+                    let mut p = parser::Parser::new(&content);
+                    let blocks = p.parse().blocks;
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let _ = sender.send(Op::Render {
+                        blocks,
+                        resource_name: doc_root.index_name().to_string(),
+                        respond_to: tx,
+                    });
+                    return match rx.await {
+                        Ok(body) => Html(body).into_response(),
+                        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Executor unavailable")
+                            .into_response(),
+                    };
+                }
                 Err(_) => {
                     return (StatusCode::NOT_FOUND, "Cannot get '/': File Not Found")
                         .into_response();
                 }
-            };
-
-            let mut p = parser::Parser::new(&content);
-            let res = p.parse();
-            let blocks = res.blocks;
-
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = sender.send(Op::Render {
-                blocks,
-                resource_name: doc_root.index_name().to_string(),
-                respond_to: tx,
-            });
-
-            return match rx.await {
-                Ok(body) => Html(body).into_response(),
-                Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Executor unavailable").into_response(),
-            };
+            }
         }
 
         let rel = path.trim_start_matches('/');
@@ -100,68 +94,55 @@ impl HttpServer {
         }
 
         if rel == doc_root.index_name() {
-            let content = match doc_root.read_index().await {
-                Ok(content) => content,
+            match doc_root.read_index().await {
+                Ok(content) => {
+                    let mut p = parser::Parser::new(&content);
+                    let blocks = p.parse().blocks;
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let _ = sender.send(Op::Render {
+                        blocks,
+                        resource_name: doc_root.index_name().to_string(),
+                        respond_to: tx,
+                    });
+                    return match rx.await {
+                        Ok(body) => Html(body).into_response(),
+                        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Executor unavailable")
+                            .into_response(),
+                    };
+                }
                 Err(_) => {
                     return (StatusCode::NOT_FOUND, "Cannot get '/': File Not Found")
                         .into_response();
                 }
-            };
-
-            let mut p = parser::Parser::new(&content);
-            let res = p.parse();
-            let blocks = res.blocks;
-
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = sender.send(Op::Render {
-                blocks,
-                resource_name: doc_root.index_name().to_string(),
-                respond_to: tx,
-            });
-
-            return match rx.await {
-                Ok(body) => Html(body).into_response(),
-                Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Executor unavailable").into_response(),
-            };
+            }
         }
 
-        if !doc_root.root_file_exists(rel).await {
-            let msg = format!("Cannot get '/{}': File Not Found", rel);
-            return (StatusCode::NOT_FOUND, msg).into_response();
-        }
-
-        // If a JHP template is requested, render it via the executor
-        if rel.ends_with(".jhp") {
-            let content = match doc_root.read_file(rel).await {
-                Ok(c) => c,
-                Err(_) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file")
-                        .into_response();
-                }
-            };
-
-            let mut p = parser::Parser::new(&content);
-            let res = p.parse();
-            let blocks = res.blocks;
-
-            let resource_name = rel.to_string();
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = sender.send(Op::Render {
-                blocks,
-                resource_name,
-                respond_to: tx,
-            });
-
-            return match rx.await {
-                Ok(body) => Html(body).into_response(),
-                Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Executor unavailable").into_response(),
-            };
-        }
-
-        // Otherwise, serve as a static file
+        // Read once and decide path based on suffix
         match doc_root.read_file(rel).await {
-            Ok(content) => Html(content).into_response(),
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response(),
+            Ok(content) => {
+                if rel.ends_with(".jhp") {
+                    let mut p = parser::Parser::new(&content);
+                    let blocks = p.parse().blocks;
+                    let resource_name = rel.to_string();
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let _ = sender.send(Op::Render {
+                        blocks,
+                        resource_name,
+                        respond_to: tx,
+                    });
+                    match rx.await {
+                        Ok(body) => Html(body).into_response(),
+                        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Executor unavailable")
+                            .into_response(),
+                    }
+                } else {
+                    Html(content).into_response()
+                }
+            }
+            Err(_) => {
+                let msg = format!("Cannot get '/{}': File Not Found", rel);
+                (StatusCode::NOT_FOUND, msg).into_response()
+            }
         }
     }
 
