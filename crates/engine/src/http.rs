@@ -24,7 +24,7 @@ impl HttpServer {
     /// Construct an HttpServer with routes defined here.
     /// By default exposes:
     /// - GET "/": renders `jhp-tests/index.jhp` via the executor.
-    pub fn new(sender: mpsc::Sender<Op>, config: HttpServerConfig) -> Self {
+    pub fn new(sender: mpsc::UnboundedSender<Op>, config: HttpServerConfig) -> Self {
         let doc_root = DocumentRoot::new(config.document_root.clone(), config.index_file.clone());
         let router = Router::new()
             .route(
@@ -59,7 +59,7 @@ impl HttpServer {
     }
 
     async fn handle_request(
-        sender: mpsc::Sender<Op>,
+        sender: mpsc::UnboundedSender<Op>,
         doc_root: DocumentRoot,
         path: String,
     ) -> Response {
@@ -82,13 +82,11 @@ impl HttpServer {
             let blocks = res.blocks;
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = sender
-                .send(Op::Render {
-                    blocks,
-                    resource_name: doc_root.index_name().to_string(),
-                    respond_to: tx,
-                })
-                .await;
+            let _ = sender.send(Op::Render {
+                blocks,
+                resource_name: doc_root.index_name().to_string(),
+                respond_to: tx,
+            });
 
             return match rx.await {
                 Ok(body) => Html(body).into_response(),
@@ -115,13 +113,11 @@ impl HttpServer {
             let blocks = res.blocks;
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = sender
-                .send(Op::Render {
-                    blocks,
-                    resource_name: doc_root.index_name().to_string(),
-                    respond_to: tx,
-                })
-                .await;
+            let _ = sender.send(Op::Render {
+                blocks,
+                resource_name: doc_root.index_name().to_string(),
+                respond_to: tx,
+            });
 
             return match rx.await {
                 Ok(body) => Html(body).into_response(),
@@ -150,13 +146,11 @@ impl HttpServer {
 
             let resource_name = rel.to_string();
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = sender
-                .send(Op::Render {
-                    blocks,
-                    resource_name,
-                    respond_to: tx,
-                })
-                .await;
+            let _ = sender.send(Op::Render {
+                blocks,
+                resource_name,
+                respond_to: tx,
+            });
 
             return match rx.await {
                 Ok(body) => Html(body).into_response(),

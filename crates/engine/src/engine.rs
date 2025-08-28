@@ -68,7 +68,7 @@ impl ExecutorPool {
     }
 
     /// Consume ops from a central channel and dispatch to executors in round-robin
-    pub async fn forward(&self, mut rx: mpsc::Receiver<Op>) {
+    pub async fn forward(&self, mut rx: mpsc::UnboundedReceiver<Op>) {
         while let Some(op) = rx.recv().await {
             let _ = self.send(op).await;
         }
@@ -92,8 +92,8 @@ impl ExecutorPool {
 
 pub struct Engine {
     pub executor_pool: std::sync::Arc<ExecutorPool>,
-    sender: mpsc::Sender<Op>,
-    receiver: Option<mpsc::Receiver<Op>>,
+    sender: mpsc::UnboundedSender<Op>,
+    receiver: Option<mpsc::UnboundedReceiver<Op>>,
     pub config: EngineConfig,
 }
 
@@ -105,7 +105,7 @@ impl Engine {
     pub fn new_with_config(nb_executors: usize, config: EngineConfig) -> Self {
         assert!(nb_executors > 0);
         let pool = std::sync::Arc::new(ExecutorPool::new(nb_executors, &config));
-        let (sender, receiver) = mpsc::channel::<Op>(128);
+        let (sender, receiver) = mpsc::unbounded_channel::<Op>();
 
         Self {
             executor_pool: pool,
