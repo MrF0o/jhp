@@ -58,10 +58,11 @@ async fn main() {
             }
         }
     }
+
     if let Some(docroot) = cli.docroot {
         config = config.set_document_root(docroot);
     }
 
-    let mut engine = Engine::new_with_config(1, config);
+    let mut engine = Engine::new_with_config(4, config);
     engine.run().await.unwrap();
 }

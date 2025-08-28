@@ -65,14 +65,14 @@ impl HttpServer {
     ) -> Response {
         // Root path: empty or only slashes -> render index if present, else 404
         if path.trim_matches('/').is_empty() {
-            if !doc_root.root_file_exists(doc_root.index_name()) {
-                return (StatusCode::NOT_FOUND, "Connot get '/': File Not Found").into_response();
+            if !doc_root.root_file_exists(doc_root.index_name()).await {
+                return (StatusCode::NOT_FOUND, "Cannot get '/': File Not Found").into_response();
             }
 
-            let content = match doc_root.read_index() {
+            let content = match doc_root.read_index().await {
                 Ok(content) => content,
                 Err(_) => {
-                    return (StatusCode::NOT_FOUND, "Connot get '/': File Not Found")
+                    return (StatusCode::NOT_FOUND, "Cannot get '/': File Not Found")
                         .into_response();
                 }
             };
@@ -102,10 +102,10 @@ impl HttpServer {
         }
 
         if rel == doc_root.index_name() {
-            let content = match doc_root.read_index() {
+            let content = match doc_root.read_index().await {
                 Ok(content) => content,
                 Err(_) => {
-                    return (StatusCode::NOT_FOUND, "Connot get '/': File Not Found")
+                    return (StatusCode::NOT_FOUND, "Cannot get '/': File Not Found")
                         .into_response();
                 }
             };
@@ -129,14 +129,14 @@ impl HttpServer {
             };
         }
 
-        if !doc_root.root_file_exists(rel) {
-            let msg = format!("Connot get '/{}': File Not Found", rel);
+        if !doc_root.root_file_exists(rel).await {
+            let msg = format!("Cannot get '/{}': File Not Found", rel);
             return (StatusCode::NOT_FOUND, msg).into_response();
         }
 
         // If a JHP template is requested, render it via the executor
         if rel.ends_with(".jhp") {
-            let content = match doc_root.read_file(rel) {
+            let content = match doc_root.read_file(rel).await {
                 Ok(c) => c,
                 Err(_) => {
                     return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file")
@@ -165,7 +165,7 @@ impl HttpServer {
         }
 
         // Otherwise, serve as a static file
-        match doc_root.read_file(rel) {
+        match doc_root.read_file(rel).await {
             Ok(content) => Html(content).into_response(),
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response(),
         }

@@ -1,5 +1,6 @@
 //! Shared V8 utilities to reduce boilerplate and keep hot paths fast.
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use jhp_parser::{CodeBlock, CodeBlockContent};
 
@@ -71,25 +72,15 @@ pub fn run_jhp_blocks_with_origin<'h>(
     hs: &mut v8::HandleScope<'h>,
     blocks: Vec<Box<CodeBlock>>,
     resource_name: &str,
-    output_buffer: Arc<Mutex<String>>,
+    output_buffer: Rc<RefCell<String>>,
 ) -> Result<(), String> {
     for block in blocks {
         match *block {
             CodeBlock::Html(CodeBlockContent {
                 content, lineno, ..
             }) => {
-                let src = format!("echo(`{}`);", content);
-                // HTML blocks map to generated echo at the block's start; column 0 is fine.
-                if let Err(e) = compile_and_run_current_with_origin(
-                    hs,
-                    &src,
-                    resource_name,
-                    lineno as i32 - 1,
-                    0,
-                ) {
-                    push_error(&output_buffer, &e);
-                    return Err(e);
-                }
+                let _lineno = lineno;
+                output_buffer.borrow_mut().push_str(&content);
             }
             CodeBlock::Expression(CodeBlockContent {
                 content,
@@ -184,11 +175,9 @@ pub fn compile_and_run_current_with_origin<'h>(
     }
 }
 
-fn push_error(buffer: &Arc<Mutex<String>>, err: &str) {
+fn push_error(buffer: &Rc<RefCell<String>>, err: &str) {
     let msg = format!("\n<!-- ERROR -->\n{}\n", err);
-    if let Ok(mut guard) = buffer.lock() {
-        guard.push_str(&msg);
-    }
+    buffer.borrow_mut().push_str(&msg);
 }
 
 fn format_v8_exception(scope: &mut v8::TryCatch<v8::HandleScope>, fallback_name: &str) -> String {

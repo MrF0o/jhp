@@ -76,9 +76,9 @@ impl<'a> Parser<'a> {
             }
             // HTML-encode JS-breaking characters so they don't break echo(`...`) literals
             match c {
-                '\'' => buf.push_str("&#39;"), // single quote
-                '"' => buf.push_str("&quot;"), // double quote
-                '`' => buf.push_str("&#96;"),  // backtick
+                '\'' => buf.push_str("\\'"), // single quote
+                '`' => buf.push_str("\\`"),  // backtick
+                '"' => buf.push_str("\\\""), // double quote
                 _ => buf.push(c),
             }
         }

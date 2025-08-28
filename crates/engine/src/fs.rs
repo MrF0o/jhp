@@ -1,7 +1,5 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+use tokio::fs;
 
 #[derive(Clone, Debug)]
 pub struct DocumentRoot {
@@ -17,8 +15,8 @@ impl DocumentRoot {
         Self { root, index_file }
     }
 
-    pub fn root_file_exists(&self, name: &str) -> bool {
-        self.root.join(name).exists()
+    pub async fn root_file_exists(&self, name: &str) -> bool {
+        fs::metadata(self.root.join(name)).await.is_ok()
     }
 
     /// Returns the full path to the index document under the document root.
@@ -32,12 +30,12 @@ impl DocumentRoot {
     }
 
     /// Read the index document contents.
-    pub fn read_index(&self) -> std::io::Result<String> {
-        fs::read_to_string(self.index_path())
+    pub async fn read_index(&self) -> std::io::Result<String> {
+        fs::read_to_string(self.index_path()).await
     }
 
     /// Read an arbitrary file under the document root.
-    pub fn read_file<P: AsRef<Path>>(&self, rel: P) -> std::io::Result<String> {
-        fs::read_to_string(self.root.join(rel))
+    pub async fn read_file<P: AsRef<Path>>(&self, rel: P) -> std::io::Result<String> {
+        fs::read_to_string(self.root.join(rel)).await
     }
 }

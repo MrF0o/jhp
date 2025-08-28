@@ -1,5 +1,7 @@
 use jhp_parser::CodeBlock;
-use std::sync::{Arc, Mutex, Once};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Once};
 use tokio::sync::{mpsc, oneshot};
 
 pub mod v8utils;
@@ -17,8 +19,9 @@ pub enum Op {
 pub struct Executor {
     pub id: usize,
     pub isolate: v8::OwnedIsolate,
-    pub buffer: Arc<Mutex<String>>,
     pub receiver: mpsc::Receiver<Op>,
+    // Hold no long-lived context; we create a fresh one per request to avoid identifier redeclarations.
+    context: v8::Global<v8::Context>,
     installers: Arc<Vec<BindingInstaller>>,
 }
 
@@ -38,13 +41,31 @@ impl Executor {
             v8::V8::initialize_platform(platform);
             v8::V8::initialize();
         });
-        let isolate = v8::Isolate::new(Default::default());
+        let mut isolate = v8::Isolate::new(Default::default());
+
+        // create a bootstrap context to run installers that shouldn't depend on per-request state
+        let installers_for_init = installers.clone();
+        let context_global = {
+            // create context and set up globals
+            let hs1 = &mut v8::HandleScope::new(&mut isolate);
+            let context_local = v8::Context::new(hs1, v8::ContextOptions::default());
+            {
+                let mut cs = v8::ContextScope::new(hs1, context_local);
+
+                // install all bindings once per executor
+                for install in installers_for_init.iter() {
+                    install(&mut cs);
+                }
+            }
+            // create a Global from the same handlescope after cs dropped
+            v8::Global::new(hs1, context_local)
+        };
 
         Self {
             id,
             isolate,
-            buffer: Arc::new(Mutex::new(String::new())),
             receiver,
+            context: context_global,
             installers,
         }
     }
@@ -53,25 +74,16 @@ impl Executor {
         while let Some(op) = self.receiver.recv().await {
             match op {
                 Op::Javascript(code) => {
-                    let scope = &mut v8::HandleScope::new(&mut self.isolate);
-                    let context = v8::Context::new(scope, v8::ContextOptions::default());
-                    let mut context_scope = &mut v8::ContextScope::new(scope, context);
+                    let hs = &mut v8::HandleScope::new(&mut self.isolate);
+                    let context = v8::Local::new(hs, &self.context);
+                    let mut cs = v8::ContextScope::new(hs, context);
 
-                    // Run binding installers first
-                    for install in self.installers.iter() {
-                        install(&mut context_scope);
-                    }
-
-                    if let Err(e) = Self::install_echo_fn(&mut context_scope, self.buffer.clone()) {
-                        eprintln!("install_echo_fn error: {}", e);
-                        continue;
-                    }
-
-                    match Self::compile_script(&mut context_scope, &code) {
-                        Ok(script) => match Self::run_script(&mut context_scope, script) {
-                            Ok(_) => (),
-                            Err(e) => eprintln!("run_script error: {}", e),
-                        },
+                    match Self::compile_script(&mut cs, &code) {
+                        Ok(script) => {
+                            if let Err(e) = Self::run_script(&mut cs, script) {
+                                eprintln!("run_script error: {}", e)
+                            }
+                        }
                         Err(e) => eprintln!("compile_script error: {}", e),
                     }
                 }
@@ -80,44 +92,36 @@ impl Executor {
                     resource_name,
                     respond_to,
                 } => {
-                    let scope = &mut v8::HandleScope::new(&mut self.isolate);
-                    let context = v8::Context::new(scope, v8::ContextOptions::default());
-                    let mut context_scope = &mut v8::ContextScope::new(scope, context);
+                    // create a fresh context per render to avoid re-declaration conflicts
+                    let hs = &mut v8::HandleScope::new(&mut self.isolate);
 
-                    // install bindings first
+                    // derive a new context so that each request has isolated globals
+                    let mut req_scope = {
+                        let context_local = v8::Context::new(hs, v8::ContextOptions::default());
+                        v8::ContextScope::new(hs, context_local)
+                    };
+
+                    // reinstall bindings that should exist in each fresh request context
                     for install in self.installers.iter() {
-                        install(&mut context_scope);
+                        install(&mut req_scope);
                     }
 
-                    let result = (|| -> Result<String, String> {
-                        // start from a clean buffer for each request
-                        {
-                            let mut guard = self
-                                .buffer
-                                .lock()
-                                .map_err(|_| "buffer poisoned".to_string())?;
-                            guard.clear();
-                        }
-                        Self::install_echo_fn(&mut context_scope, self.buffer.clone())?;
+                    // install per-request echo bound to a fresh buffer
+                    let buffer: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+                    if let Err(e) = Self::install_echo_fn(&mut req_scope, buffer.clone()) {
+                        eprintln!("install_echo_fn error: {}", e);
+                    }
 
-                        // execute each JHP block with accurate origin mapping so errors report
-                        // correct JHP line/column and are appended into the buffer where they occur.
-                        let _ = crate::v8utils::run_jhp_blocks_with_origin(
-                            &mut context_scope,
-                            blocks,
-                            &resource_name,
-                            self.buffer.clone(),
-                        );
+                    // execute each JHP block; HTML bypasses V8 for speed
+                    let _ = crate::v8utils::run_jhp_blocks_with_origin(
+                        &mut req_scope,
+                        blocks,
+                        &resource_name,
+                        buffer.clone(),
+                    );
 
-                        let guard = self
-                            .buffer
-                            .lock()
-                            .map_err(|_| "buffer poisoned".to_string())?;
-                        let out = guard.clone();
-                        Ok(out)
-                    })();
-
-                    let _ = respond_to.send(result.unwrap_or_else(|e| format!("Error: {}", e)));
+                    let out = buffer.borrow().clone();
+                    let _ = respond_to.send(out);
                 }
                 Op::Shutdown => break,
             }
@@ -142,11 +146,11 @@ impl Executor {
 
     fn install_echo_fn(
         scope: &mut v8::ContextScope<v8::HandleScope>,
-        output_buffer: Arc<Mutex<String>>,
+        output_buffer: Rc<RefCell<String>>,
     ) -> Result<(), String> {
-        // Safety: the Arc lives in self, so the Mutex address stays valid while the function exists.
-        let mutex_ptr: *const Mutex<String> = Arc::as_ptr(&output_buffer);
-        let external_ptr = mutex_ptr as *mut std::ffi::c_void;
+        // SAFETY: the Rc lives until end of request; we only use it within this context's lifetime.
+        let ptr: *const RefCell<String> = Rc::as_ptr(&output_buffer);
+        let external_ptr = ptr as *mut std::ffi::c_void;
 
         let global = scope.get_current_context().global(scope);
 
@@ -157,18 +161,18 @@ impl Executor {
                 let data = args.data();
                 if let Some(external) = v8::Local::<v8::External>::try_from(data).ok() {
                     // Recover the Mutex<String> pointer and lock it
-                    let buf_mutex = unsafe { &*(external.value() as *const Mutex<String>) };
+                    let buf_cell = unsafe { &*(external.value() as *const RefCell<String>) };
                     if let Some(arg) = args.get(0).to_string(scope) {
-                        if let Ok(mut guard) = buf_mutex.lock() {
-                            guard.push_str(&arg.to_rust_string_lossy(scope));
-                        }
+                        buf_cell
+                            .borrow_mut()
+                            .push_str(&arg.to_rust_string_lossy(scope));
                     }
                 } else {
                     eprintln!("Function data is not an External!");
                 }
             },
         )
-        .data(v8::External::new(scope, external_ptr).into()) // attach External
+        .data(v8::External::new(scope, external_ptr).into())
         .build(scope)
         .ok_or_else(|| "Failed to create echo function".to_string())?;
 
