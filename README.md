@@ -2,6 +2,21 @@
 
 _JHP_ is an experimental web backend JavaScript runtime that executes combined HTML and JavaScript code, enabling developers to write dynamic web content by processing both markup and scripts in a single execution flow.
 
+## Example
+
+```php
+<?
+let msg = "This is a message";
+echo('Another message here');
+?>
+
+<html>
+<body>
+  <?= msg ?>
+</body>
+</html>
+```
+
 ## Benchmark results
 
 ```console
