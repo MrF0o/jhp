@@ -17,6 +17,7 @@ pub struct ExecutorPool {
     senders: Vec<mpsc::Sender<Op>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
     next_idx: AtomicUsize,
+    pub modules: Arc<extensions::ModuleRegistry>,
 }
 
 impl ExecutorPool {
@@ -24,13 +25,13 @@ impl ExecutorPool {
         let mut threads = Vec::with_capacity(nb);
         let mut senders = Vec::with_capacity(nb);
 
-        // Prepare installers: built-ins + native extensions (.so) + JS extensions (.js)
-        let mut all_installers: Vec<BindingInstaller> =
-            bindings::default_installers(&config.document_root);
-        let native_installers = extensions::load_installers(&config.extensions_dir);
-        let js_installers = extensions::load_js_installers(&config.extensions_dir);
-        all_installers.extend(native_installers);
-        all_installers.extend(js_installers);
+        // Shared module registry for lazy loading
+        let modules: Arc<extensions::ModuleRegistry> =
+            Arc::new(extensions::ModuleRegistry::new(&config.extensions_dir));
+
+        // Prepare installers: built-ins + include (uses modules). Do NOT eagerly load .so or .js.
+        let all_installers: Vec<BindingInstaller> =
+            bindings::default_installers(&config, modules.clone());
         let installers: Arc<Vec<BindingInstaller>> = Arc::new(all_installers);
 
         for id in 0..nb {
@@ -60,6 +61,7 @@ impl ExecutorPool {
             senders,
             threads: Mutex::new(threads),
             next_idx: AtomicUsize::new(0),
+            modules,
         }
     }
 

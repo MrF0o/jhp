@@ -1,8 +1,12 @@
 //! Bindings installed into the JS runtime.
 //! - `global`: alias to globalThis
 //! - `include(path)`: include and execute a file inline. Supports `.jhp` and `.js`.
+//!   If `path` has no extension, it is treated as a module name and we attempt to
+//!   resolve `<name>.js` from the document root or the extensions directory.
 
-use jhp_executor::{BindingInstaller, v8utils};
+use crate::config::EngineConfig;
+use crate::extensions::ModuleRegistry;
+use jhp_executor::BindingInstaller;
 use jhp_parser as parser;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,12 +35,25 @@ pub struct IncludeBinding {
     /// Fallback directory to resolve includes relative to when a provided path
     /// isn't directly readable.
     pub document_root: PathBuf,
+    /// Directory containing extensions (native `.so` and JS shims). When `include()`
+    /// is called with a bare module name (no extension), we'll look for `<name>.js`
+    /// here as a convenience, e.g. `include('sqlite3')` resolves to `ext/sqlite3.js`
+    /// or `ext/sqlite/sqlite3.js`.
+    pub extensions_dir: PathBuf,
+    /// Shared registry for lazy-loading native modules.
+    pub modules: Arc<ModuleRegistry>,
 }
 
 impl IncludeBinding {
-    pub fn new<P: Into<PathBuf>>(document_root: P) -> Self {
+    pub fn new<P: Into<PathBuf>, Q: Into<PathBuf>>(
+        document_root: P,
+        extensions_dir: Q,
+        modules: Arc<ModuleRegistry>,
+    ) -> Self {
         Self {
             document_root: document_root.into(),
+            extensions_dir: extensions_dir.into(),
+            modules,
         }
     }
 }
@@ -45,10 +62,20 @@ impl InstallBindings for IncludeBinding {
     fn install(&self, scope: &mut v8::ContextScope<v8::HandleScope>) {
         let global = scope.get_current_context().global(scope);
 
-        // Pass document_root via External to avoid capturing non-Copy in the callback
-        let tr_ptr: *mut std::ffi::c_void =
-            Box::into_raw(Box::new(self.document_root.clone())) as *mut std::ffi::c_void;
-        let external = v8::External::new(scope, tr_ptr);
+        // Pass state via External pointer into the callback to satisfy V8's callback requirements
+        #[repr(C)]
+        struct IncludeState {
+            doc_root: PathBuf,
+            ext_dir: PathBuf,
+            modules: Arc<ModuleRegistry>,
+        }
+        let state = IncludeState {
+            doc_root: self.document_root.clone(),
+            ext_dir: self.extensions_dir.clone(),
+            modules: self.modules.clone(),
+        };
+        let state_ptr = Box::into_raw(Box::new(state)) as *mut std::ffi::c_void;
+        let external = v8::External::new(scope, state_ptr);
 
         let include_fn = v8::Function::builder(
             move |scope: &mut v8::HandleScope,
@@ -65,51 +92,181 @@ impl InstallBindings for IncludeBinding {
                 };
                 let path = path_str.to_rust_string_lossy(scope);
 
-                // load file
-                let path_ref = Path::new(&path);
-                // retrieve document_root from function data
-                let tr_buf = v8::Local::<v8::External>::try_from(args.data())
-                    .map(|e| e.value() as *const PathBuf)
-                    .unwrap();
-                let document_root: &PathBuf = unsafe { &*tr_buf };
-
-                let content = match fs::read_to_string(path_ref)
-                    .or_else(|_| fs::read_to_string(document_root.join(&path)))
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let msg = v8::String::new(
-                            scope,
-                            &format!("include('{}') read error: {}", path, e),
-                        )
+                // If no extension, treat as a potential native module first.
+                let has_ext = Path::new(&path).extension().is_some();
+                if !has_ext {
+                    // Try to lazy-load module by name
+                    let st_ptr = v8::Local::<v8::External>::try_from(args.data())
+                        .map(|e| e.value() as *const IncludeState)
                         .unwrap();
-                        let exc = v8::Exception::error(scope, msg);
-                        scope.throw_exception(exc);
-                        return;
+                    let st: &IncludeState = unsafe { &*st_ptr };
+                    match st.modules.ensure_loaded(&path) {
+                        Ok(Some(_)) => {
+                            // Newly loaded: install just this module into current context
+                            let context = scope.get_current_context();
+                            let mut cs = v8::ContextScope::new(scope, context);
+                            st.modules.install_one(&path, &mut cs);
+                        }
+                        Ok(None) => {
+                            // Already loaded: ensure installed in this context
+                            let context = scope.get_current_context();
+                            let mut cs = v8::ContextScope::new(scope, context);
+                            st.modules.install_one(&path, &mut cs);
+                        }
+                        Err(_e) => {
+                            // Not a native module; fall through to file resolution below
+                        }
                     }
-                };
+                    // If module object now exists, return it.
+                    if let Some(obj_name) = st.modules.object_name(&path) {
+                        if let Some(key) = v8::String::new(scope, &obj_name) {
+                            let g = scope.get_current_context().global(scope);
+                            if let Some(val) = g.get(scope, key.into()) {
+                                rv.set(val);
+                                return;
+                            }
+                        }
+                    }
+                    // else: proceed to try JS shim resolution
+                }
 
-                // execute..
-                let result = if path.ends_with(".jhp") {
-                    let mut p = parser::Parser::new(&content);
-                    let res = p.parse();
-                    let js = parser::blocks_to_js(res.blocks);
-                    v8utils::compile_and_run_current(scope, &js, &path)
-                } else if path.ends_with(".js") {
-                    v8utils::compile_and_run_current(scope, &content, &path)
-                } else {
-                    Err("include(path): only .jhp or .js supported".to_string())
-                };
-
-                if let Err(e) = result {
-                    let msg = v8::String::new(scope, &format!("include('{}') failed: {}", path, e))
+                // resolve and load file content as before
+                let path_ref = Path::new(&path);
+                let mut content: Option<String> = None;
+                if content.is_none() {
+                    if let Ok(s) = fs::read_to_string(path_ref) {
+                        content = Some(s);
+                    }
+                }
+                if content.is_none() {
+                    let st_ptr = v8::Local::<v8::External>::try_from(args.data())
+                        .map(|e| e.value() as *const IncludeState)
                         .unwrap();
+                    let st: &IncludeState = unsafe { &*st_ptr };
+                    if let Ok(s) = fs::read_to_string(st.doc_root.join(&path)) {
+                        content = Some(s);
+                    }
+                }
+                if !has_ext {
+                    let name = &path;
+                    let st_ptr = v8::Local::<v8::External>::try_from(args.data())
+                        .map(|e| e.value() as *const IncludeState)
+                        .unwrap();
+                    let st: &IncludeState = unsafe { &*st_ptr };
+                    let candidates = [
+                        st.doc_root.join(format!("{}.js", name)),
+                        st.ext_dir.join(name).join(format!("{}.js", name)),
+                        st.ext_dir.join(format!("{}.js", name)),
+                    ];
+                    for p in candidates.iter() {
+                        if content.is_none() {
+                            if let Ok(s) = fs::read_to_string(p) {
+                                content = Some(s);
+                                break;
+                            }
+                        }
+                    }
+                }
+                let Some(content) = content else {
+                    let msg = v8::String::new(
+                        scope,
+                        &format!(
+                            "include('{}') read error: not found as module or file",
+                            path
+                        ),
+                    )
+                    .unwrap();
                     let exc = v8::Exception::error(scope, msg);
                     scope.throw_exception(exc);
                     return;
-                }
+                };
 
-                rv.set(v8::undefined(scope).into());
+                // execute..
+                let result_val: Option<v8::Local<v8::Value>> = if path.ends_with(".jhp") {
+                    let mut p = parser::Parser::new(&content);
+                    let res = p.parse();
+                    let js = parser::blocks_to_js(res.blocks);
+                    // compile+run and capture result
+                    let context = scope.get_current_context();
+                    let mut cs = v8::ContextScope::new(scope, context);
+                    let src = v8::String::new(&mut cs, &js).unwrap();
+                    let name = v8::String::new(&mut cs, &path).unwrap();
+                    let origin = v8::ScriptOrigin::new(
+                        &mut cs,
+                        name.into(),
+                        0,
+                        0,
+                        false,
+                        0,
+                        None,
+                        false,
+                        false,
+                        false,
+                        None,
+                    );
+                    match v8::Script::compile(&mut cs, src, Some(&origin))
+                        .and_then(|s| s.run(&mut cs))
+                    {
+                        Some(v) => Some(v),
+                        None => None,
+                    }
+                } else if path.ends_with(".js") {
+                    let context = scope.get_current_context();
+                    let mut cs = v8::ContextScope::new(scope, context);
+                    let src = v8::String::new(&mut cs, &content).unwrap();
+                    let name = v8::String::new(&mut cs, &path).unwrap();
+                    let origin = v8::ScriptOrigin::new(
+                        &mut cs,
+                        name.into(),
+                        0,
+                        0,
+                        false,
+                        0,
+                        None,
+                        false,
+                        false,
+                        false,
+                        None,
+                    );
+                    match v8::Script::compile(&mut cs, src, Some(&origin))
+                        .and_then(|s| s.run(&mut cs))
+                    {
+                        Some(v) => Some(v),
+                        None => None,
+                    }
+                } else {
+                    // Treated as module shim (no extension), run as JS and return value
+                    let context = scope.get_current_context();
+                    let mut cs = v8::ContextScope::new(scope, context);
+                    let src = v8::String::new(&mut cs, &content).unwrap();
+                    let name = v8::String::new(&mut cs, &format!("{}.js", path)).unwrap();
+                    let origin = v8::ScriptOrigin::new(
+                        &mut cs,
+                        name.into(),
+                        0,
+                        0,
+                        false,
+                        0,
+                        None,
+                        false,
+                        false,
+                        false,
+                        None,
+                    );
+                    match v8::Script::compile(&mut cs, src, Some(&origin))
+                        .and_then(|s| s.run(&mut cs))
+                    {
+                        Some(v) => Some(v),
+                        None => None,
+                    }
+                };
+
+                if let Some(v) = result_val {
+                    rv.set(v);
+                } else {
+                    // error already thrown by V8; ensure we return undefined
+                    rv.set(v8::undefined(scope).into());
+                }
             },
         )
         .data(external.into())
@@ -123,16 +280,29 @@ impl InstallBindings for IncludeBinding {
 }
 
 /// Build the default set of binding installers used by the engine, configured with a document root.
-pub fn default_installers<P: AsRef<Path>>(document_root: P) -> Vec<BindingInstaller> {
-    let document_root = document_root.as_ref().to_path_buf();
+pub fn default_installers(
+    cfg: &EngineConfig,
+    modules: Arc<ModuleRegistry>,
+) -> Vec<BindingInstaller> {
+    let document_root = cfg.document_root.clone();
+    let extensions_dir = cfg.extensions_dir.clone();
     vec![
         Arc::new(|scope: &mut v8::ContextScope<v8::HandleScope>| {
             GlobalBinding.install(scope);
         }),
         {
-            let tr = document_root.clone();
+            // Ensure any modules that have been lazily loaded are installed for each context
+            let modules = modules.clone();
             Arc::new(move |scope: &mut v8::ContextScope<v8::HandleScope>| {
-                IncludeBinding::new(tr.clone()).install(scope);
+                modules.install_all(scope);
+            })
+        },
+        {
+            let tr_doc = document_root.clone();
+            let tr_ext = extensions_dir.clone();
+            let modules = modules.clone();
+            Arc::new(move |scope: &mut v8::ContextScope<v8::HandleScope>| {
+                IncludeBinding::new(tr_doc.clone(), tr_ext.clone(), modules.clone()).install(scope);
             })
         },
     ]

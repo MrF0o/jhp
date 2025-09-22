@@ -1,9 +1,11 @@
 use jhp_executor::BindingInstaller;
 use libloading::Library;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, OsStr};
 use std::fs;
 use std::os::raw::{c_char, c_uchar};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 // NOTE: legacy C-ABI removed.
 
@@ -42,7 +44,7 @@ pub type ExtRegisterV1Fn = unsafe extern "C" fn() -> JhpRegisterV1;
 
 // NOTE: legacy C-ABI support removed.
 
-fn make_v8_func_from_c_v1<'s>(
+pub fn make_v8_func_from_c_v1<'s>(
     scope: &mut v8::ContextScope<'s, v8::HandleScope>,
     func_ptr: ExtCallV1,
     free_fn: ExtFreeV1,
@@ -238,4 +240,194 @@ pub fn load_js_installers(ext_dir: &Path) -> Vec<BindingInstaller> {
         installers.push(installer);
     }
     installers
+}
+
+/// Compute a PascalCase object name from a module key (e.g., "sqlite3" -> "Sqlite3").
+fn object_name_for(module_key: &str) -> String {
+    let mut chars = module_key.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Candidates for a module's folder name on disk (to find JS bootstraps) and library base.
+fn module_name_candidates(name: &str) -> Vec<String> {
+    let mut cands = vec![name.to_string()];
+    // Also try stripping trailing digits (e.g., sqlite3 -> sqlite)
+    let stripped = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    if stripped != name && !stripped.is_empty() {
+        cands.push(stripped.to_string());
+    }
+    cands
+}
+
+/// Find and load a native module by logical name; returns the module object name and an installer
+/// that will, when run in a context, create `global[ObjectName]` and attach native functions and
+/// execute any JS bootstrap scripts found under the module folder.
+pub fn load_module_installer(
+    name: &str,
+    ext_dir: &Path,
+) -> Result<(String, BindingInstaller), String> {
+    let obj_name = object_name_for(name);
+    let obj_name_for_return = obj_name.clone();
+    let candidates = module_name_candidates(name);
+
+    // Locate a .so library: try libjhp_ext_<cand>.so in ext_dir
+    let mut lib_path: Option<PathBuf> = None;
+    for cand in &candidates {
+        let p = ext_dir.join(format!("libjhp_ext_{}.so", cand));
+        if p.exists() {
+            lib_path = Some(p);
+            break;
+        }
+    }
+    let lib_path = lib_path.ok_or_else(|| {
+        format!(
+            "No native library found for module '{}' in {}",
+            name,
+            ext_dir.display()
+        )
+    })?;
+
+    // Load the library and collect function descriptors
+    unsafe {
+        let lib = match Library::new(&lib_path) {
+            Ok(l) => Box::leak(Box::new(l)),
+            Err(e) => return Err(format!("Failed to load {}: {}", lib_path.display(), e)),
+        };
+        let sym_v1 = lib.get::<ExtRegisterV1Fn>(b"jhp_register_v1");
+        let reg = match sym_v1 {
+            Ok(s) => s(),
+            Err(_) => return Err(format!("Missing jhp_register_v1 in {}", lib_path.display())),
+        };
+        if reg.abi_version != 1 || reg.funcs.is_null() || reg.len == 0 {
+            return Err("Unsupported extension ABI or empty function table".to_string());
+        }
+        let slice = std::slice::from_raw_parts(reg.funcs, reg.len);
+        // Capture function entries for later installer use
+        let mut funcs: Vec<(String, ExtCallV1)> = Vec::new();
+        for fdesc in slice.iter() {
+            if fdesc.name.is_null() {
+                continue;
+            }
+            let Ok(name_c) = CStr::from_ptr(fdesc.name).to_str() else {
+                continue;
+            };
+            funcs.push((name_c.to_string(), fdesc.call));
+        }
+        let free_fn = reg.free_fn;
+
+        // Collect JS bootstraps under ext_dir/<cand>/*.js sorted
+        let mut js_files: Vec<(String, String)> = Vec::new(); // (resource, code)
+        'outer: for cand in &candidates {
+            let dir = ext_dir.join(cand);
+            if dir.exists() {
+                if let Ok(read) = fs::read_dir(&dir) {
+                    let mut paths: Vec<PathBuf> = read
+                        .filter_map(Result::ok)
+                        .map(|e| e.path())
+                        .filter(|p| p.extension() == Some(OsStr::new("js")))
+                        .collect();
+                    paths.sort();
+                    for p in paths {
+                        if let Ok(code) = fs::read_to_string(&p) {
+                            js_files.push((p.display().to_string(), code));
+                        }
+                    }
+                }
+                // use first found module dir only
+                break 'outer;
+            }
+        }
+
+        // Build installer
+        let obj_name_cloned = obj_name.clone();
+        let installer: BindingInstaller = Arc::new(move |scope| {
+            let global = scope.get_current_context().global(scope);
+            let key = v8::String::new(scope, &obj_name_cloned).unwrap();
+            let maybe_existing = global.get(scope, key.into());
+            let module_obj: v8::Local<v8::Object> = if let Some(val) = maybe_existing {
+                val.try_into().unwrap_or_else(|_| v8::Object::new(scope))
+            } else {
+                v8::Object::new(scope)
+            };
+            // Attach functions under module object
+            for (fname, fptr) in &funcs {
+                let f = make_v8_func_from_c_v1(scope, *fptr, free_fn);
+                let fkey = v8::String::new(scope, fname).unwrap();
+                let _ = module_obj.set(scope, fkey.into(), f.into());
+            }
+            // Set module object on global in case it wasn't there
+            let key = v8::String::new(scope, &obj_name_cloned).unwrap();
+            let _ = global.set(scope, key.into(), module_obj.into());
+
+            // Execute JS bootstraps (if any)
+            for (resource, code) in &js_files {
+                let _ = jhp_executor::v8utils::compile_and_run_current(scope, code, resource);
+            }
+        });
+        Ok((obj_name_for_return, installer))
+    }
+}
+
+/// A registry of lazily loaded modules shared across executors.
+#[derive(Default)]
+pub struct ModuleRegistry {
+    ext_dir: PathBuf,
+    loaded: RwLock<HashSet<String>>, // module keys requested (e.g., "sqlite3")
+    installers: RwLock<HashMap<String, BindingInstaller>>, // key -> installer
+    obj_names: RwLock<HashMap<String, String>>, // key -> object name (e.g., Sqlite3)
+}
+
+impl ModuleRegistry {
+    pub fn new<P: Into<PathBuf>>(ext_dir: P) -> Self {
+        Self {
+            ext_dir: ext_dir.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Ensure a module is loaded; if newly loaded, returns its installer for immediate use.
+    pub fn ensure_loaded(&self, key: &str) -> Result<Option<BindingInstaller>, String> {
+        {
+            let loaded = self.loaded.read().unwrap();
+            if loaded.contains(key) {
+                return Ok(None);
+            }
+        }
+        // Upgrade to write and double-check
+        let mut loaded_w = self.loaded.write().unwrap();
+        if loaded_w.contains(key) {
+            return Ok(None);
+        }
+        let (obj_name, installer) = load_module_installer(key, &self.ext_dir)?;
+        self.obj_names
+            .write()
+            .unwrap()
+            .insert(key.to_string(), obj_name);
+        self.installers
+            .write()
+            .unwrap()
+            .insert(key.to_string(), installer.clone());
+        loaded_w.insert(key.to_string());
+        Ok(Some(installer))
+    }
+
+    pub fn install_all(&self, scope: &mut v8::ContextScope<v8::HandleScope>) {
+        let installers = self.installers.read().unwrap();
+        for installer in installers.values() {
+            installer(scope);
+        }
+    }
+
+    pub fn install_one(&self, key: &str, scope: &mut v8::ContextScope<v8::HandleScope>) {
+        if let Some(installer) = self.installers.read().unwrap().get(key) {
+            installer(scope);
+        }
+    }
+
+    pub fn object_name(&self, key: &str) -> Option<String> {
+        self.obj_names.read().unwrap().get(key).cloned()
+    }
 }

@@ -1,17 +1,16 @@
+
 [package]
-name = "jhp_ext_sqlx"
+name = "jhp_ext_sqlite"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "jhp_ext_sqlx"
+name = "jhp_ext_sqlite"
 crate-type = ["cdylib"]
 
 [dependencies]
 libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sqlx = { workspace = true }
-tokio = { workspace = true }
-once_cell = { workspace = true }
 jhp_extensions = { path = "../../crates/extensions" }
+rusqlite = "0.37.0"
