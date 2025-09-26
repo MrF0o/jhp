@@ -13,4 +13,6 @@ libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 jhp_extensions = { path = "../../crates/extensions" }
-rusqlite = "0.37.0"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+base64 = "0.22"
+once_cell = { workspace = true }
